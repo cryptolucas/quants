@@ -1,0 +1,11 @@
+yfinance
+alpha_vantage
+pandas
+numpy
+stocktrends
+MetaTrader5
+statsmodels
+nltk
+vaderSentiment
+textblob
+scikit-learn
