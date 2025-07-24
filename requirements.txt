@@ -9,3 +9,4 @@ nltk
 vaderSentiment
 textblob
 scikit-learn
+alpaca-py
