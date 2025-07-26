@@ -11,7 +11,7 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.data.historical import CryptoHistoricalDataClient
 from alpaca.data.requests import CryptoBarsRequest
-from alpaca.data.timeframe import TimeFrame
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.data.models import BarSet
 from alpaca.trading.requests import GetAssetsRequest
 from alpaca.trading.enums import AssetClass
@@ -21,7 +21,7 @@ SECRET_KEY = "St8DcSx6cnE2lJldpFrTm9zFTtbpNlS6VHoW2co8"
 
 client = CryptoHistoricalDataClient()
 
-def ATR(DF, n=14):
+def ATR(DF, n=14): #n=14
     "function to calculate True Range and Average True Range"
     df = DF.copy()
     df["H-L"] = df["high"] - df["low"]
@@ -31,7 +31,7 @@ def ATR(DF, n=14):
     df["ATR"] = df["TR"].ewm(com=n, min_periods=n).mean()
     return df["ATR"]
 
-def ADX(DF, n=20):    # Function taken from TradingView
+def ADX(DF, n=20):  #n=20  # Function taken from TradingView
     "function to calculate ADX"
     df = DF.copy()
     df["ATR"] = ATR(DF, n)
@@ -49,14 +49,14 @@ def CAGR(DF):
     "function to calculate the Cumulative Annual Growth Rate of a trading strategy"
     df = DF.copy()
     df["cum_return"] = (1 + df["ret"]).cumprod()
-    n = len(df)/(252*390)
+    n = len(df)/(24*365)
     CAGR = (df["cum_return"].tolist()[-1])**(1/n) - 1
     return CAGR
 
 def volatility(DF):
     "function to calculate annualized volatility of a trading strategy"
     df = DF.copy()
-    vol = df["ret"].std() * np.sqrt(252*390)  #intervalos de 5 mins
+    vol = df["ret"].std() * np.sqrt(24 * 365)  #intervalos de 5 mins
     return vol
 
 def sharpe(DF,rf):
@@ -98,7 +98,7 @@ end = dt.datetime.today()
 
 
 # Filtrar solo los activos que están activos y tienen par USD
-tickers = symbols = ["AAVE/USD", "ADA/USD", "ALGO/USD", "APE/USD", "AVAX/USD", "BAT/USD", 
+tickers =   ["AAVE/USD", "ADA/USD", "ALGO/USD", "APE/USD", "AVAX/USD", "BAT/USD", 
                      "BCH/USD", "BTC/USD", "COMP/USD", "CRV/USD", "DOGE/USD", "DOT/USD", 
                      "EOS/USD", "ETC/USD", "ETH/USD", "FIL/USD", "GRT/USD", "LINK/USD", 
                      "LTC/USD", "MANA/USD", "MATIC/USD", "MKR/USD", "SHIB/USD", "SNX/USD", 
@@ -106,13 +106,15 @@ tickers = symbols = ["AAVE/USD", "ADA/USD", "ALGO/USD", "APE/USD", "AVAX/USD", "
                      "XRP/USD", "XTZ/USD", "YFI/USD", "ZEC/USD"]
 
 
+symbols = []
+
 
 # looping over tickers and creating a dataframe with close prices
 for ticker in tickers:
     try:
         req = CryptoBarsRequest(
             symbol_or_symbols= [ticker],
-            timeframe=TimeFrame.Minute,
+            timeframe=TimeFrame(1, TimeFrameUnit.Hour),
             start=start,
             end=end
         )
@@ -131,6 +133,7 @@ for ticker in tickers:
             continue
         df.dropna(how="all", inplace=True)
         ohlc_intraday[ticker] = df
+        symbols.append(ticker)
     except Exception as e:
         print(f"Error con {ticker}: {e}")
         continue
@@ -139,27 +142,34 @@ for ticker in tickers:
 ################################Backtesting####################################
 
 def renko_DF(DF):
-    "function to convert ohlc data into renko bricks"
     df = DF.copy()
-    # df.reset_index(inplace=True) --- No es necesario pues ya se hizo el reset_index al procesar los datos
-    df = df.iloc[:,[0,1,2,3,4,5]]
+    df = df.drop("symbol", axis=1)
+    df = df.iloc[:, [0,1,2,3,4,5]]
     df.columns = ["date","open","high","low","close","volume"]
-    df2 = Renko(df)
-    df2.brick_size = max(0.5,round(ATR(DF,120).iloc[-1],0))
-    renko_df = df2.period_close_bricks()
-    renko_df["bar_num"] = np.where(renko_df["uptrend"]==True,1,np.where(renko_df["uptrend"]==False,-1,0))
     
-    for i in range(1,len(renko_df["bar_num"])):  # Hace 'suma acumulativa' de las filas de bar_num
-        
+    df2 = Renko(df)
+    df2.brick_size = max(0.5, round(ATR(DF, 120).iloc[-1], 0))
+    renko_df = df2.period_close_bricks()
+    
+    renko_df.reset_index(drop=True, inplace=True)
+    
+    # Paso 1: Inicializar bar_num
+    renko_df["bar_num"] = np.where(renko_df["uptrend"] == True, 1, -1)
+
+    # Paso 2: Acumular si hay racha de tendencia
+    for i in range(1, len(renko_df)):
         if renko_df.loc[i, "bar_num"] > 0 and renko_df.loc[i-1, "bar_num"] > 0:
             renko_df.loc[i, "bar_num"] += renko_df.loc[i-1, "bar_num"]
-            
         elif renko_df.loc[i, "bar_num"] < 0 and renko_df.loc[i-1, "bar_num"] < 0:
             renko_df.loc[i, "bar_num"] += renko_df.loc[i-1, "bar_num"]
-            
-    renko_df.drop_duplicates(subset="date",keep="last",inplace=True) # Quita fechas repetidas
+
+    # Paso 3: Eliminar fechas repetidas después del acumulado (si querés)
+    renko_df.drop_duplicates(subset="date", keep="last", inplace=True)
+    
+    #renko_df.dropna(subset=["date"], inplace=True)
     
     return renko_df
+
     
 
 #Merging renko df with original ohlc df
@@ -168,16 +178,25 @@ df = copy.deepcopy(ohlc_intraday)
 tickers_signal = {}
 tickers_ret = {}
 
-for ticker in tickers:
+for ticker in symbols:
     print("merging for ",ticker)
     renko = renko_DF(df[ticker]) # DataFrame 'renko' con columna "bar_num"
     renko.columns = ["Date","open","high","low","close","uptrend","bar_num"]
+    
     df_reset = df[ticker].copy()
     df_reset.rename(columns={"timestamp": "Date"}, inplace=True)  # renombra para que coincida con renko
+    df_reset= df_reset.drop("symbol", axis=1)
     
     renko["Date"] = pd.to_datetime(renko["Date"]).dt.tz_localize(None)
     df_reset["Date"] = pd.to_datetime(df_reset["Date"]).dt.tz_localize(None)
-
+    
+    print("Longitudes---------------")
+    print(len(renko))
+    print(len(df_reset))
+    print("looooooollllllllllllllllllll")
+    print(renko)
+    print(df_reset)
+    
     ohlc_renko[ticker] = df_reset.merge(   # Agrega al DataFrame original la columan "bar_num" de Renko y hace el Merge con "Date"
         renko[["Date", "bar_num"]],
         how="outer",
@@ -186,13 +205,17 @@ for ticker in tickers:
     ohlc_renko[ticker]["bar_num"] = ohlc_renko[ticker]["bar_num"].ffill()
     ohlc_renko[ticker]["ADX"]=  ADX(ohlc_renko[ticker])
     
+    print("--------------------")
+    print(ohlc_renko[ticker])
+    
+    
     tickers_signal[ticker] = ""
     tickers_ret[ticker] = []
     
     
 
 #Identifying signals and calculating daily return
-for ticker in tickers:
+for ticker in symbols:
     print("calculating daily returns for ",ticker)
     
     for i in range(len(ohlc_intraday[ticker])):
@@ -201,26 +224,26 @@ for ticker in tickers:
             
             tickers_ret[ticker].append(0)
             if i > 0:
-                if ohlc_renko[ticker]["bar_num"][i] >= 2 and ohlc_renko[ticker]["ADX"][i] >= 25:
+                if ohlc_renko[ticker]["bar_num"][i] >= 2 and ohlc_renko[ticker]["ADX"][i] >= 10:
                     tickers_signal[ticker] = "Buy"
-                elif ohlc_renko[ticker]["bar_num"][i] <=-2 and ohlc_renko[ticker]["ADX"][i] >= 25:
+                elif ohlc_renko[ticker]["bar_num"][i] <=-2 and ohlc_renko[ticker]["ADX"][i] >= 10:
                     tickers_signal[ticker] = "Sell"
         
         elif tickers_signal[ticker] == "Buy":
             
             tickers_ret[ticker].append((ohlc_renko[ticker]["close"][i]/ohlc_renko[ticker]["close"][i-1])-1)
             if i > 0:
-                if ohlc_renko[ticker]["bar_num"][i]<=-2 and ohlc_renko[ticker]["ADX"][i] >= 25:
+                if ohlc_renko[ticker]["bar_num"][i]<=-2 and ohlc_renko[ticker]["ADX"][i] >= 10:
                     tickers_signal[ticker] = "Sell"
-                elif ohlc_renko[ticker]["bar_num"][i] < 2 and ohlc_renko[ticker]["ADX"][i] < 25:
+                elif ohlc_renko[ticker]["bar_num"][i] < 2 and ohlc_renko[ticker]["ADX"][i] < 10:
                     tickers_signal[ticker] = ""
                 
         elif tickers_signal[ticker] == "Sell":
             tickers_ret[ticker].append((ohlc_renko[ticker]["close"][i-1]/ohlc_renko[ticker]["close"][i])-1)
             if i > 0:
-                if ohlc_renko[ticker]["bar_num"][i] >= 2 and ohlc_renko[ticker]["ADX"][i] >= 25:
+                if ohlc_renko[ticker]["bar_num"][i] >= 2 and ohlc_renko[ticker]["ADX"][i] >= 10:
                     tickers_signal[ticker] = "Buy"
-                elif ohlc_renko[ticker]["bar_num"][i] > -2 and ohlc_renko[ticker]["ADX"][i] < 25:
+                elif ohlc_renko[ticker]["bar_num"][i] > -2 and ohlc_renko[ticker]["ADX"][i] < 10:
                     tickers_signal[ticker] = ""
                     
     ohlc_renko[ticker]["ret"] = np.array(tickers_ret[ticker])
@@ -229,7 +252,7 @@ for ticker in tickers:
 
 #calculating overall strategy's KPIs
 strategy_df = pd.DataFrame()
-for ticker in tickers:
+for ticker in symbols:
     strategy_df[ticker] = ohlc_renko[ticker]["ret"]
 strategy_df["ret"] = strategy_df.mean(axis=1)
 CAGR(strategy_df)
@@ -243,7 +266,7 @@ max_dd(strategy_df)
 cagr = {}
 sharpe_ratios = {}
 max_drawdown = {}
-for ticker in tickers:
+for ticker in symbols:
     print("calculating KPIs for ",ticker)      
     cagr[ticker] =  CAGR(ohlc_renko[ticker])
     sharpe_ratios[ticker] =  sharpe(ohlc_renko[ticker],0.044)
@@ -255,7 +278,7 @@ KPI_df.T
 KPI_df["Overall"] = KPI_df.mean(axis=1)
 
 print("---------------------------Strategy KPIs-----------------------------------------------")
-print(CAGR(strategy_df))
-print(sharpe(strategy_df,0.044))
-print(max_dd(strategy_df))
+print("CAGR: " + str(CAGR(strategy_df)))
+print("Sharpe Ratio: " + str(sharpe(strategy_df,0.044)))
+print("Max. Drawdown: " + str(max_dd(strategy_df)))
 print("------------------------------------------------------------------------------------------")
